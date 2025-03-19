@@ -1,6 +1,6 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, Map, Symbol, Vec};
-use soroban_sdk::token::{TokenClient};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Map, Symbol, Vec};
+use soroban_sdk::token::TokenClient;
 // use soroban_token_sdk::metadata::TokenMetadata;
 
 mod pbtoken {
@@ -99,12 +99,47 @@ impl Contract {
             panic!("Invoice is not fully paid");
         }
 
-        // Transfer funds to each recipient
+        // ! Transfer funds to each recipient
         let usdc_token = TokenClient::new(&env, &Address::from_str(&env, "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"));
         for (recipient, amount) in invoice.recipients.iter().zip(invoice.amounts.iter()) {
             usdc_token.transfer(&env.current_contract_address(), &recipient, &amount);
         }
     }
+
+    pub fn expire_invoice(env: Env, invoice_id: Symbol) -> bool {
+        let mut invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
+    
+        // Check if the invoice is already paid or expired
+        if invoice.paid || env.ledger().timestamp() > invoice.due_date {
+            return false;
+        }
+    
+        // Mark the invoice as expired
+        invoice.paid = true; // Alternatively, add an `expired` field to the Invoice struct
+        env.storage().instance().set(&invoice_id, &invoice);
+        true
+    }
+
+    // * Refund a payment
+    pub fn refund_payment(env: Env, invoice_id: Symbol, payer: Address) -> bool {
+        let mut invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
+    
+        // Ensure the invoice is expired
+        if !invoice.paid || env.ledger().timestamp() <= invoice.due_date {
+            return false;
+        }
+    
+        // Refund the payer's contribution
+        let amount = invoice.payments.get(payer.clone()).unwrap_or(0);
+        if amount > 0 {
+            let usdc_token = TokenClient::new(&env, &Address::from_str(&env, "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"));
+            usdc_token.transfer(&env.current_contract_address(), &payer, &amount);
+            invoice.payments.set(payer, 0);
+            env.storage().instance().set(&invoice_id, &invoice);
+        }
+        true
+    }
+    
 
     // * Get invoice details
     pub fn get_invoice(env: Env, invoice_id: Symbol) -> Invoice {
