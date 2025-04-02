@@ -3,11 +3,27 @@ use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Map, Symbo
 use soroban_sdk::token::TokenClient;
 // use soroban_token_sdk::metadata::TokenMetadata;
 
+// mod invoice;
+
+// use invoice::Invoice;
 mod pbtoken {
     soroban_sdk::contractimport!(
             file = "/Users/finisher/Documents/github/stellar/paybeam-soroban-token/target/wasm32-unknown-unknown/release/paybeam_token.wasm"
     );
 }
+
+// TODO : Use as an escrow contract
+// * The contract will hold the funds until the invoice is fully paid
+// * The funds will be released to the merchants once the invoice is fully paid
+// * The contract will also handle refunds in case the invoice expires
+
+// Todo : Auto staking of the funds in the contract
+// * The funds in the contract will be auto-staked to earn interest
+
+// Todo : Add a merchant address to the invoice
+// * release the funds to the merchant once the invoice is fully paid
+
+
 
 #[contract]
 pub struct Contract;
@@ -19,6 +35,7 @@ impl Contract {
         invoice_id: Symbol, // * Unique invoice ID
         total_amount: i128,
         due_date: u64,
+        merchant: Address,
         recipients: Vec<Address>,
         amounts: Vec<i128>,
     ) -> Symbol {
@@ -42,6 +59,7 @@ impl Contract {
             total_amount,
             due_date,
             recipients,
+            merchant,
             amounts,
             paid: false,
             payments: Map::new(&env),
@@ -106,6 +124,8 @@ impl Contract {
         }
     }
 
+    
+
     pub fn expire_invoice(env: Env, invoice_id: Symbol) -> bool {
         let mut invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
     
@@ -156,11 +176,14 @@ impl Contract {
 // Invoice structure
 #[contracttype]
 pub struct Invoice {
-    pub total_amount: i128,
-    pub due_date: u64,
-    pub recipients: Vec<Address>,
-    pub amounts: Vec<i128>,
-    pub paid: bool,
-    pub payments: Map<Address, i128>,
+    pub total_amount: i128, // * Total amount of the invoice
+    pub due_date: u64, // * Due date of the invoice
+    pub recipients: Vec<Address>,   // * Recipients of the split payment
+    pub amounts: Vec<i128>, // * Amounts to be paid by each recipient
+    pub paid: bool, // * Payment status
+    pub merchant : Address, // * Merchant address
+    pub payments: Map<Address, i128>, // * Payment tracker
 }
+
+
 mod test;
