@@ -1,11 +1,15 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, log, Address, Env, Map, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, log, Address, Env, Map, Symbol, Vec};
 use soroban_sdk::token::TokenClient;
 #[contract]
 pub struct Contract;
 
 #[contractimpl]
 impl Contract {
+
+    pub fn initialize(env: Env, token: Address) {
+        env.storage().instance().set(&Symbol::new(&env, "token"), &token);
+    }
     
     pub fn create_invoice(
         env: Env,
@@ -70,6 +74,48 @@ impl Contract {
         invoice_id
     }
 
+    pub fn generate_invoice(
+        env: Env,
+        invoice_id: Symbol,
+        total_amount: i128,
+        due_date: u64,
+        merchant: Address,
+        memo: Symbol,
+    ) -> Result<Symbol, Error> {
+        merchant.require_auth();
+    
+        if env.storage().instance().has(&invoice_id) {
+            return Err(Error::InvoiceAlreadyExists);
+        }
+    
+        if total_amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+    
+        if due_date <= env.ledger().timestamp() {
+            return Err(Error::InvalidDate);
+        }
+
+        let memo_for_key = memo.clone();
+    
+        let invoice = Invoice {
+            total_amount,
+            due_date,
+            recipients: Vec::new(&env),
+            merchant,
+            amounts: Vec::new(&env),
+            paid: false,
+            payments: Map::new(&env),
+            memo,
+        };
+    
+        env.storage().instance().set(&memo_for_key, &invoice_id);
+        env.storage().instance().set(&invoice_id, &invoice);
+    
+        log!(&env, "Invoice created", invoice_id);
+        Ok(invoice_id)
+    }
+
     pub fn get_invoice_by_memo(env: Env, memo: Symbol) -> Option<Invoice> {
         let maybe_invoice_id: Option<Symbol> = env.storage().instance().get(&memo);
         match maybe_invoice_id {
@@ -84,26 +130,34 @@ impl Contract {
         env: Env,
         invoice_id: Symbol,
         payer: Address,
+        token : Address,
         amount: i128,
-    ) {
+    ) -> Result<(), Error> {
         payer.require_auth();
         // Fetch the invoice
-        let mut invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
+        // let mut invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
+    
+        let mut invoice: Invoice = env.storage()
+        .instance()
+        .get(&invoice_id)
+        .ok_or(Error::NotFound)?;
 
-        // Check if the invoice is already paid
-        if invoice.paid {
-            // return false;
-            panic!("Invoice is already paid");
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
         }
-
+    
+        if invoice.paid {
+            return Err(Error::AlreadyPaid);
+        }
+    
         if env.ledger().timestamp() > invoice.due_date {
-            panic!("Invoice expired");
-        } 
+            return Err(Error::Expired);
+        }
 
         // let addr : Address = Address::from_str("USDC_CONTRACT_ADDRESS").unwrap();
 
         // Transfer USDC from payer to the escrow contract
-        let token_client = TokenClient::new(&env, &Address::from_str(&env, "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA")); // USDC testnet contract address
+        let token_client = TokenClient::new(&env, &token); // USDC testnet contract address
         token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
         // Update the payment tracker
@@ -123,16 +177,19 @@ impl Contract {
             }
 
             // release funds to the merchant once fully paid and overpayments are sorted.
-            Self::release_funds(env.clone(), invoice_id.clone());
+            Self::release_funds(env.clone(), invoice_id.clone(), token.clone());
         }
 
-        // Save the updated invoice
         env.storage().instance().set(&invoice_id, &invoice);
+        Ok(())
+
+        // Save the updated invoice
+        // env.storage().instance().set(&invoice_id, &invoice);
         // log!(&env, "Payment received", (payer, amount));
     }
 
     // Release funds to merchant once the invoice is fully paid
-    fn release_funds(env: Env, invoice_id: Symbol) {
+    fn release_funds(env: Env, invoice_id: Symbol, token : Address) {
         let invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
 
         // Ensure the invoice is fully paid
@@ -141,8 +198,23 @@ impl Contract {
         }
 
         // Transfer funds to merchant when fully paid
-        let token_client = TokenClient::new(&env, &Address::from_str(&env, "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"));
+        let token_client = TokenClient::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &invoice.merchant, &invoice.total_amount);
+    }
+
+    pub fn invoice_is_expired(env: Env, invoice_id: Symbol) -> Result<bool, Error> {
+        let mut invoice: Invoice = env.storage()
+            .instance()
+            .get(&invoice_id)
+            .ok_or(Error::NotFound)?;
+    
+        if invoice.paid || env.ledger().timestamp() > invoice.due_date {
+            return Ok(false);
+        }
+    
+        invoice.paid = true;
+        env.storage().instance().set(&invoice_id, &invoice);
+        Ok(true)
     }
 
     
@@ -162,7 +234,7 @@ impl Contract {
     }
 
     // Refund a payment
-    pub fn refund_payment(env: Env, invoice_id: Symbol, payer: Address) -> bool {
+    pub fn refund_payment(env: Env, invoice_id: Symbol, payer: Address, _token : Address) -> bool {
         let mut invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
     
         // Ensure the invoice is expired
@@ -173,7 +245,7 @@ impl Contract {
         // Refund the payer's contribution
         let amount = invoice.payments.get(payer.clone()).unwrap_or(0);
         if amount > 0 {
-            let token_client = TokenClient::new(&env, &Address::from_str(&env, "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"));
+            let token_client = TokenClient::new(&env, &_token);
             token_client.transfer(&env.current_contract_address(), &payer, &amount);
             invoice.payments.set(payer, 0);
             env.storage().instance().set(&invoice_id, &invoice);
@@ -208,4 +280,18 @@ pub struct Invoice {
     pub memo : Symbol, // Memo for the invoice
 }
 
+#[contracterror]
+pub enum Error {
+    InvoiceAlreadyExists = 1,
+    InvalidAmount = 2,
+    InvalidDate = 3,
+    NotFound = 4,
+    AlreadyPaid = 5,
+    Expired = 6,
+    Unauthorized = 7,
+    Overpayment = 8,
+}
+
 mod test;
+
+
