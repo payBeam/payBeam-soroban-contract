@@ -7,7 +7,7 @@ pub struct Contract;
 #[contractimpl]
 impl Contract {
 
-    pub fn initialize(env: Env, token: Address, admin: Address) {
+    pub fn initialize(env: Env, token: Address, admin: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
@@ -15,6 +15,11 @@ impl Contract {
         env.storage().instance().set(&Symbol::new(&env, "token"), &token);
         Ok(())
     }
+
+    pub fn version(env: Env) -> Symbol {
+        Symbol::new(&env, "1.0.0")
+    }
+    
     
     pub fn create_invoice(
         env: Env,
@@ -31,11 +36,6 @@ impl Contract {
             panic!("Invoice ID already exists");
         }
 
-        // To validate the split payment amounts
-        // if recipients.len() != amounts.len() {
-        //     panic!("Recipients and amounts must have the same length");
-        // }
-
         if total_amount <= 0 {
             panic!("Amount must be positive");
         }
@@ -44,16 +44,8 @@ impl Contract {
             panic!("Due date must be in the future");
         }
 
-        // let total_split_amount: i128 = amounts.iter().sum();
-        // if total_split_amount != total_amount {
-        //     panic!("Total split amount must equal the invoice amount");
-        // }
 
         let memo_for_key = memo.clone(); 
-
-        // let token_address: Address = env.storage().persistent()
-        //     .get(&Symbol::new(&env, "token"))
-        //     .unwrap_or_else(|| panic!("Token not initialized"));
 
         // invoice details
         let invoice = Invoice {
@@ -129,65 +121,6 @@ impl Contract {
         }
     }
 
-    // pub fn pay_an_invoice(
-    //     env: Env,
-    //     invoice_id: Symbol,
-    //     payer: Address,
-    //     amount: i128,
-    // ) -> Result<(), Error> {
-    //     payer.require_auth();
-        
-    //     // Safe storage access
-    //     let mut invoice: Invoice = env.storage()
-    //         .instance()
-    //         .get(&invoice_id)
-    //         .ok_or(Error::NotFound)?;
-    
-    //     // Validate state
-    //     if invoice.paid {
-    //         return Err(Error::AlreadyPaid);
-    //     }
-    //     if env.ledger().timestamp() > invoice.due_date {
-    //         return Err(Error::Expired);
-    //     }
-    //     if amount <= 0 {
-    //         return Err(Error::InvalidAmount);
-    //     }
-    
-    //     // Safe token transfer
-    //     let token_client = TokenClient::new(&env, &Address::from_str(&env, "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"));
-    //     token_client.transfer(&payer, &env.current_contract_address(), &amount)
-    //         .map_err(|_| Error::TransferFailed)?;
-    
-    //     // Safe arithmetic
-    //     let total_paid = invoice.payments.get(payer.clone())
-    //         .unwrap_or(0)
-    //         .checked_add(amount)
-    //         .ok_or(Error::Overflow)?;
-            
-    //     invoice.payments.set(payer.clone(), total_paid);
-    
-    //     // Process payment completion
-    //     let total_payments: i128 = invoice.payments.values().try_fold(0i128, |acc, x| acc.checked_add(*x))
-    //         .ok_or(Error::Overflow)?;
-    
-    //     if total_payments >= invoice.total_amount {
-    //         invoice.paid = true;
-            
-    //         // Handle overpayment
-    //         if total_payments > invoice.total_amount {
-    //             let overpayment = total_payments.checked_sub(invoice.total_amount)
-    //                 .ok_or(Error::Overflow)?;
-    //             token_client.transfer(&env.current_contract_address(), &payer, &overpayment)
-    //                 .map_err(|_| Error::TransferFailed)?;
-    //         }
-    
-    //         Self::release_funds(env.clone(), invoice_id.clone())?;
-    //     }
-    
-    //     env.storage().instance().set(&invoice_id, &invoice);
-    //     Ok(())
-    // }
     
 
     // Pay a portion of the invoice
@@ -353,7 +286,10 @@ impl Contract {
     }
 
     pub fn upgrade(env: Env, new_wasm_hash : BytesN<32>) {
-        let admin
+        let admin : Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 }
 
@@ -404,6 +340,7 @@ pub enum Error {
     InvalidPaymentToken = 23,
     InvalidPaymentRecipient = 24,
     AlreadyInitialized = 25,
+    InvalidTest = 26,
 }
 
 mod test;
