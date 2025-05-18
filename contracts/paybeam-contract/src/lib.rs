@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, log, Address, Env, Map, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, log, Address, Env, Map, Symbol, Vec, BytesN};
 use soroban_sdk::token::TokenClient;
 #[contract]
 pub struct Contract;
@@ -7,8 +7,13 @@ pub struct Contract;
 #[contractimpl]
 impl Contract {
 
-    pub fn initialize(env: Env, token: Address) {
+    pub fn initialize(env: Env, token: Address, admin: Address) {
+        if env.storage().instance().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&Symbol::new(&env, "token"), &token);
+        Ok(())
     }
     
     pub fn create_invoice(
@@ -123,6 +128,66 @@ impl Contract {
             None => None,
         }
     }
+
+    // pub fn pay_an_invoice(
+    //     env: Env,
+    //     invoice_id: Symbol,
+    //     payer: Address,
+    //     amount: i128,
+    // ) -> Result<(), Error> {
+    //     payer.require_auth();
+        
+    //     // Safe storage access
+    //     let mut invoice: Invoice = env.storage()
+    //         .instance()
+    //         .get(&invoice_id)
+    //         .ok_or(Error::NotFound)?;
+    
+    //     // Validate state
+    //     if invoice.paid {
+    //         return Err(Error::AlreadyPaid);
+    //     }
+    //     if env.ledger().timestamp() > invoice.due_date {
+    //         return Err(Error::Expired);
+    //     }
+    //     if amount <= 0 {
+    //         return Err(Error::InvalidAmount);
+    //     }
+    
+    //     // Safe token transfer
+    //     let token_client = TokenClient::new(&env, &Address::from_str(&env, "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"));
+    //     token_client.transfer(&payer, &env.current_contract_address(), &amount)
+    //         .map_err(|_| Error::TransferFailed)?;
+    
+    //     // Safe arithmetic
+    //     let total_paid = invoice.payments.get(payer.clone())
+    //         .unwrap_or(0)
+    //         .checked_add(amount)
+    //         .ok_or(Error::Overflow)?;
+            
+    //     invoice.payments.set(payer.clone(), total_paid);
+    
+    //     // Process payment completion
+    //     let total_payments: i128 = invoice.payments.values().try_fold(0i128, |acc, x| acc.checked_add(*x))
+    //         .ok_or(Error::Overflow)?;
+    
+    //     if total_payments >= invoice.total_amount {
+    //         invoice.paid = true;
+            
+    //         // Handle overpayment
+    //         if total_payments > invoice.total_amount {
+    //             let overpayment = total_payments.checked_sub(invoice.total_amount)
+    //                 .ok_or(Error::Overflow)?;
+    //             token_client.transfer(&env.current_contract_address(), &payer, &overpayment)
+    //                 .map_err(|_| Error::TransferFailed)?;
+    //         }
+    
+    //         Self::release_funds(env.clone(), invoice_id.clone())?;
+    //     }
+    
+    //     env.storage().instance().set(&invoice_id, &invoice);
+    //     Ok(())
+    // }
     
 
     // Pay a portion of the invoice
@@ -141,20 +206,6 @@ impl Contract {
         .instance()
         .get(&invoice_id)
         .ok_or(Error::NotFound)?;
-
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-    
-        if invoice.paid {
-            return Err(Error::AlreadyPaid);
-        }
-    
-        if env.ledger().timestamp() > invoice.due_date {
-            return Err(Error::Expired);
-        }
-
-        // let addr : Address = Address::from_str("USDC_CONTRACT_ADDRESS").unwrap();
 
         // Transfer USDC from payer to the escrow contract
         let token_client = TokenClient::new(&env, &token); // USDC testnet contract address
@@ -186,6 +237,42 @@ impl Contract {
         // Save the updated invoice
         // env.storage().instance().set(&invoice_id, &invoice);
         // log!(&env, "Payment received", (payer, amount));
+    }
+
+    pub fn simple_pay_invoice(
+        env: Env,
+        invoice_id: Symbol,
+        payer: Address,
+        token : Address,
+        amount: i128, 
+    )  -> Result<(), Error> {
+
+        payer.require_auth();
+
+        // Fetch the invoice
+        let mut invoice: Invoice = env.storage()
+            .instance()
+            .get(&invoice_id)
+            .unwrap_or_else(|| panic!("Invoice not found"));
+
+        // Transfer USDC from payer to the escrow contract
+        let token_client = TokenClient::new(&env, &token); // USDC testnet contract address
+        token_client.transfer(&payer, &env.current_contract_address(), &amount);
+
+        // Update the payment tracker
+        let total_paid = invoice.payments.get(payer.clone()).unwrap_or(0) + amount;
+        invoice.payments.set(payer.clone(), total_paid);
+
+        Ok(())
+
+    }
+
+    pub fn transfer_funds(env: Env, token : Address, destination: Address, amount: i128) -> Result<(), Error> {
+        // Transfer to destination
+        let token_client = TokenClient::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &destination, &amount);
+
+        Ok(())
     }
 
     // Release funds to merchant once the invoice is fully paid
@@ -264,6 +351,10 @@ impl Contract {
         let invoice: Invoice = env.storage().instance().get(&invoice_id).unwrap_or_else(|| panic!("Invoice not found"));
         invoice.paid
     }
+
+    pub fn upgrade(env: Env, new_wasm_hash : BytesN<32>) {
+        let admin
+    }
 }
 
 // Invoice structure
@@ -280,16 +371,39 @@ pub struct Invoice {
     pub memo : Symbol, // Memo for the invoice
 }
 
+#[contracttype]
+#[derive(Clone)]
+enum DataKey {
+    Admin,
+}
+
 #[contracterror]
 pub enum Error {
-    InvoiceAlreadyExists = 1,
-    InvalidAmount = 2,
-    InvalidDate = 3,
-    NotFound = 4,
-    AlreadyPaid = 5,
-    Expired = 6,
+    NotFound = 1,
+    AlreadyPaid = 2,
+    Expired = 3,
+    InvalidAmount = 4,
+    Overflow = 5,
+    TransferFailed = 6,
     Unauthorized = 7,
-    Overpayment = 8,
+    InvalidState = 8,
+    InvoiceAlreadyExists = 9,
+    InvalidDate = 10,
+    InvalidRecipient = 11,
+    InvalidMemo = 12,
+    InvalidToken = 13,
+    InvalidInvoice = 14,
+    InvalidPayment = 15,
+    InvalidInvoiceId = 16,
+    InvalidDueDate = 17,
+    InvalidMerchant = 18,
+    InvalidPaymentAmount = 19,
+    InvalidPaymentStatus = 20,
+    InvalidPaymentMethod = 21,
+    InvalidPaymentAddress = 22,
+    InvalidPaymentToken = 23,
+    InvalidPaymentRecipient = 24,
+    AlreadyInitialized = 25,
 }
 
 mod test;
